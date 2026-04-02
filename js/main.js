@@ -1,144 +1,103 @@
-// ═══════════════════════════════════════════════════
-//  layout.js — 레이아웃 동기화 & 미니맵
-//
-//  FIX: getStrokes() getter 사용으로 바인딩 이슈 해결
-//  FIX: transform.js 순환 참조 해결 — registerUpdateMinimap 사용
-// ═══════════════════════════════════════════════════
+// js/main.js — 완전 수정본
+import { initDomRefs } from './state.js';
+import { resetView, toggleGrid } from './transform.js';
+import { initLayout } from './layout.js';
+import { setTool, setToolOrPanel, setColor, setStroke, activatePending, revertToPan } from './tools.js';
+import { initPenPanel } from './penPanel.js';
+import { initMouseEvents } from './mouse.js';
+import { initTouchEvents } from './touch.js';
+import { initKeyboard } from './keyboard.js';
+import { initContextMenu } from './contextMenu.js';
+import { initImageInput } from './image.js';
+import { initPersistence, saveBoard, clearAll, autoSave, persistence, restoreBoard } from './persistence.js';
+import { addSticky } from './sticky.js';
+import { addCardWindow } from './card.js';       // ★ FIX: 누락된 card.js import 추가
+import { createStartupWindow } from './startup.js';
+import { mkSvg, setAttrs } from './svg.js';
+import { initToolbar, updateSatellitePositions } from './toolbar.js';
+import { initHistory, undo, redo } from './history.js';
+import { initToolOrb, notifyToolChanged } from './toolOrb.js';
+import { registerToolFunctions, registerNotifyToolChanged } from './toolBridge.js';
 
-import { vp, pCvs, board, svgl, T } from './state.js';
-import * as S from './state.js';
-import { isMobile } from './utils.js';
-import { updateGrid, registerUpdateMinimap } from './transform.js';
+persistence._svg = { mkSvg, setAttrs };
 
-export function syncLayout() {
-  const tb = document.getElementById('toolbar');
-  const mm = document.getElementById('minimap');
-  const tbRect = tb.getBoundingClientRect();
+function init() {
+  initDomRefs();
 
-  document.documentElement.style.setProperty('--tb-w', '0px');
-  document.documentElement.style.setProperty('--tb-h', '0px');
+  registerToolFunctions(setTool, activatePending, revertToPan);
+  registerNotifyToolChanged(notifyToolChanged);
 
-  vp.style.cssText = `top:0;left:0;right:0;bottom:0;`;
-  pCvs.style.cssText = `top:0;left:0;right:0;bottom:0;width:${window.innerWidth}px;height:${window.innerHeight}px;`;
-  pCvs.width = window.innerWidth;
-  pCvs.height = window.innerHeight;
+  initLayout();
+  initPenPanel();
+  initMouseEvents();
+  initTouchEvents();
+  initKeyboard();
+  initContextMenu();
+  initImageInput();
+  initPersistence();
+  initToolbar();
+  requestAnimationFrame(() => updateSatellitePositions());
+  initToolOrb();
 
-  if (mm) {
-    mm.style.bottom = isMobile() ? `${Math.ceil(tbRect.height) + 20}px` : '16px';
-    mm.style.right = '16px';
+  document.getElementById('zoom-pill').addEventListener('click', resetView);
+
+  document.querySelectorAll('#toolbar [data-tool], #mode-bar [data-tool]').forEach(btn => {
+    btn.addEventListener('click', () => setTool(btn.dataset.tool));
+  });
+
+  document.querySelectorAll('#toolbar [data-tool-or-panel]').forEach(btn => {
+    btn.addEventListener('click', () => setToolOrPanel(btn.dataset.toolOrPanel));
+  });
+
+  const actions = {
+    addSticky:   () => addSticky(),
+    addCard:     () => addCardWindow(),
+    addImage:    () => document.getElementById('img-in').click(),
+    toggleGrid:  () => toggleGrid(),
+    save:        () => saveBoard(),
+    load:        () => document.getElementById('load-in').click(),
+    clearAll:    () => clearAll(),
+    undo:        () => undo(),
+    redo:        () => redo(),
+  };
+  document.querySelectorAll('[data-action]').forEach(btn => {
+    const fn = actions[btn.dataset.action];
+    if (fn) btn.addEventListener('click', fn);
+  });
+
+  document.querySelectorAll('#color-tray .cdot').forEach(el => {
+    el.addEventListener('click', () => setColor(el));
+  });
+
+  document.querySelectorAll('#color-tray .sbtn').forEach(el => {
+    el.addEventListener('click', () => setStroke(el, parseInt(el.dataset.sw)));
+  });
+
+  autoSave();
+
+  let hasAutosave = false;
+  try {
+    const saved = localStorage.getItem('canvas-autosave');
+    if (saved) {
+      const data = JSON.parse(saved);
+      if ((data.elements && data.elements.length > 0) || (data.strokes && data.strokes.length > 0)) {
+        restoreBoard(data);
+        hasAutosave = true;
+      }
+    }
+  } catch (e) { /* ignore */ }
+
+  if (!hasAutosave) {
+    createStartupWindow();
   }
 
-  updateGrid();
-  updateMinimap();
+  setTimeout(() => initHistory(), 100);
+
+  console.log('∞ Canvas 0.01 — Modular loaded');
 }
 
-export function updateMinimap() {
-  const mm = document.getElementById('minimap');
-  if (!mm || isMobile()) return;
-  if (!board) return; // ★ FIX: DOM 미초기화 방어
-  const ctx = mm.getContext('2d');
-  const W = mm.width, H = mm.height;
-  ctx.clearRect(0, 0, W, H);
-
-  ctx.fillStyle = '#f5f2eb';
-  ctx.fillRect(0, 0, W, H);
-
-  // ★ FIX: getter 함수로 항상 최신 strokes 참조
-  const strokes = S.getStrokes();
-
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  const elRects = [];
-  const strokeRects = [];
-
-  board.querySelectorAll('.el').forEach(el => {
-    const x = parseFloat(el.style.left) || 0;
-    const y = parseFloat(el.style.top) || 0;
-    const w = parseFloat(el.style.width) || 100;
-    const h = parseFloat(el.style.height) || 60;
-    elRects.push({ x, y, w, h });
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x + w);
-    maxY = Math.max(maxY, y + h);
-  });
-
-  if (strokes && strokes.length > 0) {
-    strokes.forEach(s => {
-      try {
-        if (s.svgEl && typeof s.svgEl.getBBox === 'function') {
-          const bb = s.svgEl.getBBox();
-          if (bb.width > 0 || bb.height > 0) {
-            strokeRects.push({ x: bb.x, y: bb.y, w: bb.width, h: bb.height });
-            minX = Math.min(minX, bb.x);
-            minY = Math.min(minY, bb.y);
-            maxX = Math.max(maxX, bb.x + bb.width);
-            maxY = Math.max(maxY, bb.y + bb.height);
-          }
-        }
-      } catch (e) { /* 무시 */ }
-    });
-  }
-
-  if (!vp) return; // ★ FIX: DOM 미초기화 방어
-  const vpR = vp.getBoundingClientRect();
-  const vpTL = { x: (0 - T.x) / T.s, y: (0 - T.y) / T.s };
-  const vpBR = { x: (vpR.width - T.x) / T.s, y: (vpR.height - T.y) / T.s };
-  minX = Math.min(minX, vpTL.x);
-  minY = Math.min(minY, vpTL.y);
-  maxX = Math.max(maxX, vpBR.x);
-  maxY = Math.max(maxY, vpBR.y);
-
-  if (minX === Infinity) {
-    minX = vpTL.x; minY = vpTL.y;
-    maxX = vpBR.x; maxY = vpBR.y;
-  }
-
-  const pad = 150;
-  minX -= pad; minY -= pad; maxX += pad; maxY += pad;
-  const bw = maxX - minX || 1, bh = maxY - minY || 1;
-  const sc = Math.min(W / bw, H / bh);
-  const offX = (W - bw * sc) / 2;
-  const offY = (H - bh * sc) / 2;
-
-  ctx.save();
-  ctx.translate(offX, offY);
-  ctx.scale(sc, sc);
-  ctx.translate(-minX, -minY);
-
-  elRects.forEach(r => {
-    ctx.fillStyle = 'rgba(26,23,20,0.18)';
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.strokeStyle = 'rgba(26,23,20,0.25)';
-    ctx.lineWidth = 1 / sc;
-    ctx.strokeRect(r.x, r.y, r.w, r.h);
-  });
-
-  strokeRects.forEach(r => {
-    ctx.fillStyle = 'rgba(200,75,47,0.12)';
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-  });
-
-  ctx.strokeStyle = '#c84b2f';
-  ctx.lineWidth = Math.max(2 / sc, 1);
-  ctx.setLineDash([6 / sc, 4 / sc]);
-  ctx.strokeRect(vpTL.x, vpTL.y, vpBR.x - vpTL.x, vpBR.y - vpTL.y);
-  ctx.setLineDash([]);
-
-  ctx.fillStyle = 'rgba(200,75,47,0.06)';
-  ctx.fillRect(vpTL.x, vpTL.y, vpBR.x - vpTL.x, vpBR.y - vpTL.y);
-
-  ctx.restore();
-
-  ctx.strokeStyle = 'rgba(26,23,20,0.1)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(0, 0, W, H);
-}
-
-export function initLayout() {
-  // ★ FIX: transform.js에 updateMinimap 콜백 등록 (순환 참조 해결)
-  registerUpdateMinimap(updateMinimap);
-
-  window.addEventListener('resize', () => syncLayout());
-  window.addEventListener('orientationchange', () => setTimeout(syncLayout, 250));
-  syncLayout();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
 }
